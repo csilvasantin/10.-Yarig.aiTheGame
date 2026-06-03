@@ -458,7 +458,8 @@ async function pushMemberReport({ member, store, role, lines }) {
   const titleDate = `${monthNameES(date)} de ${year}`;
   const name = String(member || '').replace(/\s+/g, ' ').trim().slice(0, 40);
   if (!name) return false;
-  const author = name + (store ? ` · ${String(store).slice(0, 60)}` : '');
+  const xpacio = store ? String(store).slice(0, 60) : '';
+  const author = name + (xpacio ? ` · ${xpacio}` : '');
   const items = (Array.isArray(lines) ? lines : []).map(s => String(s)).filter(Boolean).slice(0, 20);
   if (!items.length) items.push('Jornada completada.');
   const heading = `Jornada${role ? ` · ${role}` : ''}${store ? ` · ${store}` : ''}`;
@@ -471,7 +472,8 @@ async function pushMemberReport({ member, store, role, lines }) {
 
   const now = new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid', hour12: false });
   const sectionsJs = `      {\n        heading: ${JSON.stringify(heading)},\n        items: [\n${items.map(i => `          ${JSON.stringify(i)}`).join(',\n')}\n        ]\n      }`;
-  const newEntry = `  {\n    date: "${date}",\n    title: "${titleDate}",\n    author: ${JSON.stringify(author)},\n    updateTime: ${JSON.stringify(now)},\n    sections: [\n${sectionsJs}\n    ]\n  },`;
+  const xpacioField = xpacio ? `\n    xpacio: ${JSON.stringify(xpacio)},` : '';
+  const newEntry = `  {\n    date: "${date}",\n    title: "${titleDate}",\n    author: ${JSON.stringify(author)},${xpacioField}\n    updateTime: ${JSON.stringify(now)},\n    sections: [\n${sectionsJs}\n    ]\n  },`;
 
   const authorMarker = `author: ${JSON.stringify(author)}`;
   let scan = 0, loc = null;
