@@ -547,6 +547,20 @@ let monitorAlert={active:false,timer:0,msg:'',color:''};
 // Set to false to disable live Yarig.ai connection (vanilla game mode)
 const YARIG_LIVE_ENABLED=true;
 
+// ── Roster de equipo (gemelo digital) ──────────────────────
+// Miembros dados de alta desde el gemelo; aparecen como personajes
+// contratables en la tienda. Se cargan del servidor (members.json).
+let MEMBERS=[];
+async function loadMembers(){
+  try{
+    const r=await fetch(`${location.origin}/yarig/members`,{signal:AbortSignal.timeout(4000)});
+    const j=await r.json();
+    if(j&&j.ok&&Array.isArray(j.members)) MEMBERS=j.members;
+  }catch(e){ /* offline: roster vacio */ }
+  return MEMBERS;
+}
+loadMembers();
+
 const YARIG={
   pollInterval:30000,lastPoll:0,connected:false,
   tasks:[],team:[],clocking:[],score:0,roster:{},
@@ -1777,7 +1791,9 @@ function initGame(){
     {col:12,row:2},  // [4] DJ → right behind djBooth
     {col:3,row:4},{col:6,row:3},{col:7,row:1},  // extras
   ];
-  G.staff=M.staffInit.map((s,i)=>{
+  // Miembros del roster del gemelo digital -> personajes contratables extra
+  const rosterInit=(MEMBERS||[]).map((m,k)=>({slot:M.staffInit.length+k,name:m.name,role:m.role,hired:false,fromRoster:true}));
+  G.staff=M.staffInit.concat(rosterInit).map((s,i)=>{
     const gp=staffGridPos[i%staffGridPos.length];
     const iso=toIso(gp.col,gp.row);
     // Apply custom names/roles from settings
@@ -2095,10 +2111,11 @@ function doAction(id){
   if(id==='yarigRefresh'){yarigPoll();return;}
   if(id==='closeUI'){uiOpen=false;return;}
   if(id.startsWith('hire')){
-    const i=parseInt(id[4]);
+    const i=parseInt(id.slice(4));
     const s=G.staff[i];
-    if(!s.hired&&G.money>=CFG.HIRE_COST[i]){
-      G.money-=CFG.HIRE_COST[i];G.weekExpenses+=CFG.HIRE_COST[i];
+    const hireCost=CFG.HIRE_COST[s.role%CFG.HIRE_COST.length];
+    if(!s.hired&&G.money>=hireCost){
+      G.money-=hireCost;G.weekExpenses+=hireCost;
       s.hired=true;s.energy=100;s.morale=85;s.level=1;
       s.shirt=0;s.hair=3; // Altadis uniform: blue shirt, black hair
       s.fired=false;s.fireBubble=false;s.clickBubble=0;s.isWalking=false;
@@ -2128,7 +2145,7 @@ function doAction(id){
     }
   }
   if(id.startsWith('train')){
-    const i=parseInt(id[5]);const s=G.staff[i];
+    const i=parseInt(id.slice(5));const s=G.staff[i];
     if(s.hired&&G.money>=CFG.TRAIN_COST[s.role%CFG.TRAIN_COST.length]&&s.level<5){
       G.money-=CFG.TRAIN_COST[s.role%CFG.TRAIN_COST.length];G.weekExpenses+=CFG.TRAIN_COST[s.role%CFG.TRAIN_COST.length];
       s.level++;s.morale=Math.min(100,s.morale+10);
@@ -2136,7 +2153,7 @@ function doAction(id){
     }
   }
   if(id.startsWith('fire')){
-    const i=parseInt(id[4]);const s=G.staff[i];
+    const i=parseInt(id.slice(4));const s=G.staff[i];
     if(s.hired&&i>0){ // can't fire staff[0] (player-controlled)
       s.fired=true; // mark as leaving
       s.clickBubble=120;
@@ -8142,6 +8159,36 @@ window.xtAPI = (function(){
     },
     cerrardia: function(){ return api.actualizardiario(); },
 
+    // ── EQUIPO (alta de miembros desde el gemelo) ─────────────
+    // Da de alta un miembro en el roster: aparece como personaje
+    // contratable en la tienda y queda registrado en el diario.
+    altamiembro: async function(nombre, rol){
+      const name=String(nombre||'').trim();
+      if(!name) return {ok:false, message:'Falta el nombre. Uso: altamiembro("Marta","cajero") o /altamiembro Marta cajero'};
+      try{
+        const res=await fetch(`${location.origin}/yarig/member/add`,{
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({name:name, role:rol})
+        });
+        const j=await res.json().catch(()=>({}));
+        if(!j || !j.ok) return {ok:false, message:'No se pudo dar de alta'+(j&&j.error?': '+j.error:'')};
+        MEMBERS=Array.isArray(j.members)?j.members:MEMBERS;
+        // Anadir en caliente como personaje contratable si hay partida en curso
+        if(G && G.staff && j.member){
+          const m=j.member, idx=G.staff.length;
+          const gp=staffGridPos[idx%staffGridPos.length], iso=toIso(gp.col,gp.row);
+          G.staff.push({slot:idx, name:m.name, role:m.role, hired:false, fromRoster:true,
+            x:iso.x-7, y:iso.y-20, level:1, energy:100, morale:80, busy:0, dir:1, isWalking:false,
+            shirt:0, hair:3, bTimer:0, bIdx:idx%5, aFrame:0, aTimer:0,
+            yarigTaskId:null, yarigTaskDesc:'', yarigState:'idle', yarigProject:'',
+            homeCol:gp.col, homeRow:gp.row, navTarget:null, navPath:null, navPathIdx:0, navTick:0,
+            djScratch:0, djScratchNext:90});
+        }
+        return {ok:true, message:`Alta OK: ${j.member.name} (${j.member.roleLabel}). Contratable en el juego y registrado en el diario.`, data:j.member};
+      }catch(e){ return {ok:false, message:'Error al dar de alta: '+e.message}; }
+    },
+    miembros: async function(){ await loadMembers(); return {ok:true, data:MEMBERS}; },
+
     // ── DISPATCHER DE COMANDOS SLASH ──────────────────────────
     // Permite escribir comandos tipo "/actualizardiario", "/cerrardia"
     // o "/hire 3". Mapea "/nombre args" al metodo xtAPI correspondiente.
@@ -8162,6 +8209,7 @@ window.xtAPI = (function(){
         consultas: ['status()','staff()','stock()'],
         acciones: ['hire(slot)','train(slot)','fire(slot)','restock(slot)','advertise(0|1|2)','upgrade()','visit(Com|Tec|Del|GC)','save()'],
         diario: ['actualizardiario()  ·  /actualizardiario','cerrardia()  ·  /cerrardia'],
+        equipo: ['altamiembro(nombre, rol)  ·  /altamiembro Marta cajero','miembros()  ·  /miembros'],
         musica: ['toggleMusic()','nextTrack()','prevTrack()','toggleLamp()'],
         yarig: ['yarigStatus()','yarigTasks()','yarigTeam()','yarigSync()','yarigStart(idx)','yarigPause(idx)','yarigFinish(idx)'],
         hue: ['hueStatus()','hueToggle()','hueColor(r,g,b)','hueScene(name)','hueBrightness(1-254)'],
