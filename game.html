@@ -1355,8 +1355,27 @@ const MODELS=[
       {stock:50,max:70, price:15,factor:0.7},{stock:40,max:60, price:3, factor:1.2},
     ],
   },
+  { // 4 — XTANCO BARCELONA (vacio: sin personal hasta darlo de alta desde el CLI)
+    id:'barcelona', locId:'barcelona', city:'Barcelona',
+    neon:'#cc55ff', accent:'#cc55ff',
+    START_MONEY:3500,
+    YEAR_TARGETS:[2200,5800,12000,23000,40000],
+    SALE_PROB:0.055,SALE_BASE:3.5,
+    RUSH_CHANCE:0.0025,RUSH_DURATION:160,RUSH_MULT:2.4,
+    INSPECT_CHANCE:0.0006,
+    HIRE_COST:[500,400,450,1200,800],TRAIN_COST:[250,200,220,380,300],SALARY:[130,105,115,210,160],
+    RESTOCK_COST:150,UPGRADE_COST:4500,
+    ADVERT:[{cost:350,fame:8,label:'BÁSICA'},{cost:800,fame:22,label:'MEDIA'},{cost:1800,fame:50,label:'PREMIUM'}],
+    staffInit:[],
+    prodsInit:[
+      {stock:80,max:100,price:8, factor:1.2},{stock:60,max:80, price:12,factor:0.9},
+      {stock:90,max:100,price:3, factor:1.5},{stock:70,max:100,price:2, factor:1.0},
+      {stock:50,max:80, price:1, factor:1.3},{stock:40,max:60, price:5, factor:0.8},
+    ],
+  },
 ];
 let activeModel=0;
+const BARCELONA_MODEL = MODELS.findIndex(m => m.locId === 'barcelona');
 
 // ── I18N ──────────────────────────────────────────────────────
 const LANGS={
@@ -1791,8 +1810,9 @@ function initGame(){
     {col:12,row:2},  // [4] DJ → right behind djBooth
     {col:3,row:4},{col:6,row:3},{col:7,row:1},  // extras
   ];
-  // Miembros del roster del gemelo digital -> personajes contratables extra
-  const rosterInit=(MEMBERS||[]).map((m,k)=>({slot:M.staffInit.length+k,name:m.name,role:m.role,hired:false,fromRoster:true}));
+  // Miembros del roster del gemelo digital para ESTA ubicacion -> personajes contratables extra
+  const locId=M.locId||'default';
+  const rosterInit=(MEMBERS||[]).filter(m=>(m.location||'default')===locId).map((m,k)=>({slot:M.staffInit.length+k,name:m.name,role:m.role,hired:false,fromRoster:true}));
   G.staff=M.staffInit.concat(rosterInit).map((s,i)=>{
     const gp=staffGridPos[i%staffGridPos.length];
     const iso=toIso(gp.col,gp.row);
@@ -2088,6 +2108,12 @@ cv.addEventListener('mousemove',e=>{
 // ── ACTIONS ───────────────────────────────────────────────────
 function doAction(id){
   checkGuidedTut(id);
+  // Badge XpaceOS (en el menu) -> entrar al Xtanco Barcelona
+  if(id==='xpaceBcn'){
+    if(state!==S.MENU || BARCELONA_MODEL<0) return;
+    loadMembers().then(()=>{ modelSel=BARCELONA_MODEL; initGame(); state=S.GAME; startMusic(); });
+    return;
+  }
   if(id.startsWith('tab')){activeTab=parseInt(id[3]);return;}
   // Yarig actions
   if(id.startsWith('yarigStart_')){
@@ -3584,8 +3610,13 @@ function drawMenu(){
       r(pbX,pbY,pbW,pbH,'#1a1a2a');r(pbX,pbY,(pbW*pct)|0,pbH,P.neon1);
     }
   }
-  // Version tag
-  cx.globalAlpha=0.3;tx('v5.3 · 2026-04-04',W-80,H-8,P.gray,7,'center');cx.globalAlpha=1;
+  // XpaceOS version badge — clic = acceso al Xtanco Barcelona
+  const verTxt='XpaceOS v.2026.06.02.r3';
+  cx.font='7px monospace';
+  const vw=(cx.measureText(verTxt).width+18)|0, vh=15, vx=W-vw-6, vy=H-vh-4;
+  glow('#cc55ff',8); r(vx,vy,vw,vh,'#2a1040'); rx(vx,vy,vw,vh,'#cc55ff',1); nog();
+  tx(verTxt, vx+vw/2, vy+10, '#e0a0ff', 7, 'center');
+  BTNS['xpaceBcn']={x:vx,y:vy,w:vw,h:vh};
 }
 
 // ── INTRO / HOW TO PLAY ───────────────────────────────────────
@@ -7121,6 +7152,15 @@ function tabSales(py){
   }
 }
 
+function staffReflexion(s){
+  if(s.yarigState==='active') return 'En mision: '+String(s.yarigTaskDesc||'').slice(0,20);
+  if(s.yarigState==='finished') return 'Mision cumplida!';
+  const m=s.morale||0;
+  if(m>=80) return 'Motivado y a tope';
+  if(m>=55) return 'Estable, todo bien';
+  if(m>=35) return 'Algo cansado';
+  return 'Necesita apoyo';
+}
 function tabStaff(py){
   const bw=UI.w-10;
   // Role colors and icons
@@ -7161,6 +7201,8 @@ function tabStaff(py){
       } else {
         tx('MAX LVL',ix+20,ry+66,'#ddaa22',7,'center');
       }
+      // Reflexion del miembro (animo/feedback conectado a Yarig + moral)
+      if(cardH>=88){ tx('“'+staffReflexion(s)+'”', ix, ry+76, '#88aacc', 5); }
       // Salary + Fire button
       tx('€'+CFG.SALARY[s.role%CFG.SALARY.length]*s.level+'/día',ix,ry+cardH-8,'#cc6666',6);
       // Fire button (red, right side)
@@ -7844,6 +7886,16 @@ function loop(){
 }
 loop();
 
+// Acceso directo al Xtanco Barcelona via URL (?loc=barcelona) — p.ej. desde admira.app
+(function(){
+  try{
+    const loc=new URLSearchParams(location.search).get('loc');
+    if(loc && loc.toLowerCase()==='barcelona' && BARCELONA_MODEL>=0){
+      loadMembers().then(()=>{ modelSel=BARCELONA_MODEL; initGame(); state=S.GAME; startMusic(); });
+    }
+  }catch(e){}
+})();
+
 // ═══════════════════════════════════════════════════════════════
 //  xtAPI — CLI-to-Game bridge for Claude
 //  Allows Claude CLI to query and control the game via Chrome MCP
@@ -8162,19 +8214,21 @@ window.xtAPI = (function(){
     // ── EQUIPO (alta de miembros desde el gemelo) ─────────────
     // Da de alta un miembro en el roster: aparece como personaje
     // contratable en la tienda y queda registrado en el diario.
-    altamiembro: async function(nombre, rol){
+    altamiembro: async function(nombre, rol, loc){
       const name=String(nombre||'').trim();
       if(!name) return {ok:false, message:'Falta el nombre. Uso: altamiembro("Marta","cajero") o /altamiembro Marta cajero'};
+      const activeLoc=(MODELS[activeModel]&&MODELS[activeModel].locId)?MODELS[activeModel].locId:'barcelona';
+      const memberLoc=String(loc||activeLoc||'barcelona').toLowerCase();
       try{
         const res=await fetch(`${location.origin}/yarig/member/add`,{
           method:'POST', headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({name:name, role:rol})
+          body:JSON.stringify({name:name, role:rol, location:memberLoc})
         });
         const j=await res.json().catch(()=>({}));
         if(!j || !j.ok) return {ok:false, message:'No se pudo dar de alta'+(j&&j.error?': '+j.error:'')};
         MEMBERS=Array.isArray(j.members)?j.members:MEMBERS;
-        // Anadir en caliente como personaje contratable si hay partida en curso
-        if(G && G.staff && j.member){
+        // Anadir en caliente como personaje contratable si la partida es de esa ubicacion
+        if(G && G.staff && j.member && (j.member.location||'default')===activeLoc){
           const m=j.member, idx=G.staff.length;
           const gp=staffGridPos[idx%staffGridPos.length], iso=toIso(gp.col,gp.row);
           G.staff.push({slot:idx, name:m.name, role:m.role, hired:false, fromRoster:true,
