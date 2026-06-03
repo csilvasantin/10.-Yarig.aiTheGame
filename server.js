@@ -362,7 +362,11 @@ async function pushDiaryEntry(taskList, userEmail, score, clocking) {
   const altasHoy = readMembers().filter(m => m && m.date === date);
   if (altasHoy.length) sections.push({
     heading: `Altas de equipo (${altasHoy.length})`,
-    items: altasHoy.map(m => `Nuevo miembro: ${m.name} (${m.roleLabel || ROLE_LABELS[m.role] || ('rol ' + m.role)})`),
+    items: altasHoy.map(m => {
+      const rl = m.roleLabel || ROLE_LABELS[m.role] || ('rol ' + m.role);
+      const loc = m.location && m.location !== 'default' ? ` — ${m.location.charAt(0).toUpperCase() + m.location.slice(1)}` : '';
+      return `Nuevo miembro: ${m.name} (${rl})${loc}`;
+    }),
   });
   if (!sections.length) sections.push({ heading: 'Actividad', items: [`Sin tareas registradas por ${userEmail}`] });
 
@@ -689,7 +693,11 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url === '/yarig/members') {
-    jsonResponse(res, { ok: true, members: readMembers() });
+    const q = req.url.includes('?') ? new URLSearchParams(req.url.split('?')[1]) : new URLSearchParams();
+    const loc = q.get('location');
+    const all = readMembers();
+    const members = loc ? all.filter(m => (m.location || 'default') === loc) : all;
+    jsonResponse(res, { ok: true, members });
     return;
   }
 
@@ -697,14 +705,15 @@ const server = http.createServer(async (req, res) => {
     const body = await readBody(req);
     const name = String(body.name || '').trim().slice(0, 24);
     const role = resolveRole(body.role);
+    const location = (String(body.location || 'default').trim().toLowerCase().slice(0, 24)) || 'default';
     if (!name) { jsonResponse(res, { ok: false, error: 'Falta el nombre del miembro' }); return; }
     if (role < 0) { jsonResponse(res, { ok: false, error: 'Rol no valido. Usa: cajero, repositor, azafata, manager o dj' }); return; }
     const list = readMembers();
-    if (list.some(m => m && String(m.name).toLowerCase() === name.toLowerCase())) {
-      jsonResponse(res, { ok: false, error: `Ya existe un miembro llamado ${name}` });
+    if (list.some(m => m && (m.location || 'default') === location && String(m.name).toLowerCase() === name.toLowerCase())) {
+      jsonResponse(res, { ok: false, error: `Ya existe ${name} en ${location}` });
       return;
     }
-    const member = { name, role, roleLabel: ROLE_LABELS[role], date: todayMadrid(), createdAt: new Date().toISOString() };
+    const member = { name, role, roleLabel: ROLE_LABELS[role], location, date: todayMadrid(), createdAt: new Date().toISOString() };
     list.push(member);
     writeMembers(list);
     const pushed = await pushMembersToGitHub(list);
