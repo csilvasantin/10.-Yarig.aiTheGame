@@ -8128,16 +8128,46 @@ window.xtAPI = (function(){
       return {ok:true,message:'Brillo: '+bri};
     },
 
+    // ── DIARIO ────────────────────────────────────────────────
+    // Publica/actualiza la entrada del diario de hoy en GitHub
+    // (mismo flujo que el push automatico, pero forzado al instante).
+    actualizardiario: async function(){
+      try{
+        const res = await fetch(`${location.origin}/yarig/diary/push`,{method:'POST'});
+        const j = await res.json().catch(()=>({}));
+        return (j && j.ok)
+          ? {ok:true, message:'Diario actualizado y publicado (entrada de hoy)'}
+          : {ok:false, message:'No se pudo actualizar el diario'+(j&&j.error?': '+j.error:'')};
+      }catch(e){ return {ok:false, message:'Error al actualizar el diario: '+e.message}; }
+    },
+    cerrardia: function(){ return api.actualizardiario(); },
+
+    // ── DISPATCHER DE COMANDOS SLASH ──────────────────────────
+    // Permite escribir comandos tipo "/actualizardiario", "/cerrardia"
+    // o "/hire 3". Mapea "/nombre args" al metodo xtAPI correspondiente.
+    cli: function(line){
+      const str = String(line||'').trim().replace(/^\//,'');
+      if(!str) return api.help();
+      const parts = str.split(/\s+/);
+      const name = parts[0];
+      const args = parts.slice(1).map(a => /^-?\d+(?:\.\d+)?$/.test(a) ? Number(a) : a);
+      const fn = api[name];
+      if(typeof fn !== 'function') return {ok:false, message:'Comando "/'+name+'" no existe. Usa /help'};
+      return fn.apply(api, args);
+    },
+
     // ── AYUDA ─────────────────────────────────────────────────
     help: function(){
-      return {ok:true,message:'xtAPI — Comandos disponibles',data:{
+      return {ok:true,message:'xtAPI — Comandos disponibles (tambien con prefijo "/" via cli, p.ej. cli("/actualizardiario"))',data:{
         consultas: ['status()','staff()','stock()'],
         acciones: ['hire(slot)','train(slot)','fire(slot)','restock(slot)','advertise(0|1|2)','upgrade()','visit(Com|Tec|Del|GC)','save()'],
+        diario: ['actualizardiario()  ·  /actualizardiario','cerrardia()  ·  /cerrardia'],
         musica: ['toggleMusic()','nextTrack()','prevTrack()','toggleLamp()'],
         yarig: ['yarigStatus()','yarigTasks()','yarigTeam()','yarigSync()','yarigStart(idx)','yarigPause(idx)','yarigFinish(idx)'],
         hue: ['hueStatus()','hueToggle()','hueColor(r,g,b)','hueScene(name)','hueBrightness(1-254)'],
         helpers: ['hireByRole(rol)','hireByName(nombre)','restockByName(nombre)','restockAll()','hireAll()','trainAll()'],
         atajos: ['hireDJ()','hireCashier()','hireHostess()','hireManager()','hireStorcker()'],
+        cli: ['cli("/comando args") — ejecuta cualquier comando con sintaxis slash'],
       }};
     },
   };
