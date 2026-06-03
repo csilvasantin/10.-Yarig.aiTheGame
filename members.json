@@ -1,1 +1,10 @@
-[]
+[
+  {
+    "name": "Marta",
+    "role": 0,
+    "roleLabel": "cajero",
+    "location": "barcelona",
+    "date": "2026-06-03",
+    "createdAt": "2026-06-03T12:23:36.367Z"
+  }
+]
