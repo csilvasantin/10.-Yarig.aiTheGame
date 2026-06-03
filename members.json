@@ -1,1 +1,9 @@
-[]
+[
+  {
+    "name": "TestZZ",
+    "role": 2,
+    "roleLabel": "azafata",
+    "date": "2026-06-03",
+    "createdAt": "2026-06-03T11:41:05.067Z"
+  }
+]
