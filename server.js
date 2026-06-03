@@ -32,6 +32,41 @@ const XAI_API_KEY = process.env.XAI_API_KEY || process.env.GROK_API_KEY || '';
 const XAI_MODEL = process.env.XAI_MODEL || 'grok-4.20-beta-latest-non-reasoning';
 const DIARIO_REPO = 'csilvasantin/18.-diario';
 
+// ── Roster de equipo (gemelo digital) ──────────────────────
+const GAME_REPO = 'csilvasantin/10.-Yarig.aiTheGame';
+const MEMBERS_FILE = path.join(__dirname, 'members.json');
+const ROLE_LABELS = ['cajero', 'repositor', 'azafata', 'manager', 'dj'];
+const ROLE_IDS = {
+  cajero: 0, cajera: 0, cashier: 0,
+  repositor: 1, repositora: 1, reponedor: 1, stocker: 1,
+  azafata: 2, hostess: 2,
+  manager: 3, encargado: 3, 'store manager': 3,
+  dj: 4,
+};
+function resolveRole(r) {
+  if (typeof r === 'number' && r >= 0 && r <= 4) return r;
+  const n = ROLE_IDS[String(r || '').trim().toLowerCase()];
+  return n === undefined ? -1 : n;
+}
+function readMembers() {
+  try { const a = JSON.parse(fs.readFileSync(MEMBERS_FILE, 'utf8')); return Array.isArray(a) ? a : []; }
+  catch { return []; }
+}
+function writeMembers(list) {
+  fs.writeFileSync(MEMBERS_FILE, JSON.stringify(list, null, 2) + '\n');
+}
+async function pushMembersToGitHub(list) {
+  let sha = null;
+  try { const r = await ghGet(`/repos/${GAME_REPO}/contents/members.json`); sha = r.sha; } catch { /* no existe aun */ }
+  const body = {
+    message: 'chore: roster de equipo actualizado [Yarig.ai] [skip ci]',
+    content: Buffer.from(JSON.stringify(list, null, 2) + '\n').toString('base64'),
+  };
+  if (sha) body.sha = sha;
+  try { await ghPut(`/repos/${GAME_REPO}/contents/members.json`, body); return true; }
+  catch (e) { console.error('[members] push failed:', e.message); return false; }
+}
+
 // ── Philips Hue ────────────────────────────────────────────
 const HUE_BRIDGE_IP = process.env.HUE_BRIDGE_IP || '';
 const HUE_API_KEY = process.env.HUE_API_KEY || '';
@@ -323,6 +358,12 @@ async function pushDiaryEntry(taskList, userEmail, score, clocking) {
   const sections  = [];
   if (completed.length) sections.push({ heading: completedHeading, items: completed.map(toItem) });
   if (pending.length)   sections.push({ heading: 'Tareas pendientes',  items: pending.map(toItem) });
+  // Altas de equipo dadas hoy desde el gemelo digital
+  const altasHoy = readMembers().filter(m => m && m.date === date);
+  if (altasHoy.length) sections.push({
+    heading: `Altas de equipo (${altasHoy.length})`,
+    items: altasHoy.map(m => `Nuevo miembro: ${m.name} (${m.roleLabel || ROLE_LABELS[m.role] || ('rol ' + m.role)})`),
+  });
   if (!sections.length) sections.push({ heading: 'Actividad', items: [`Sin tareas registradas por ${userEmail}`] });
 
   const sectionsJs = sections.map(s =>
@@ -526,7 +567,7 @@ const server = http.createServer(async (req, res) => {
   if (url === '/today' || url === '/team' || url === '/score' ||
       url === '/notifications' || url === '/status' ||
       url.startsWith('/task/') || url === '/clocking' ||
-      url === '/diary/push') {
+      url === '/diary/push' || url === '/members' || url === '/member/add') {
     url = '/yarig' + url;
   }
 
@@ -624,6 +665,41 @@ const server = http.createServer(async (req, res) => {
     const score = await yarigAPI('/score/json_user_score');
     const ok = await pushDiaryEntry(tasks, YARIG_EMAIL, score, clocking);
     jsonResponse(res, { ok });
+    return;
+  }
+
+  if (url === '/yarig/members') {
+    jsonResponse(res, { ok: true, members: readMembers() });
+    return;
+  }
+
+  if (url === '/yarig/member/add' && req.method === 'POST') {
+    const body = await readBody(req);
+    const name = String(body.name || '').trim().slice(0, 24);
+    const role = resolveRole(body.role);
+    if (!name) { jsonResponse(res, { ok: false, error: 'Falta el nombre del miembro' }); return; }
+    if (role < 0) { jsonResponse(res, { ok: false, error: 'Rol no valido. Usa: cajero, repositor, azafata, manager o dj' }); return; }
+    const list = readMembers();
+    if (list.some(m => m && String(m.name).toLowerCase() === name.toLowerCase())) {
+      jsonResponse(res, { ok: false, error: `Ya existe un miembro llamado ${name}` });
+      return;
+    }
+    const member = { name, role, roleLabel: ROLE_LABELS[role], date: todayMadrid(), createdAt: new Date().toISOString() };
+    list.push(member);
+    writeMembers(list);
+    const pushed = await pushMembersToGitHub(list);
+    // Reflejar el alta en el diario de hoy (entrada Yarig.ai)
+    let diary = false;
+    try {
+      const todayData = await yarigAPI('/tasks/json_get_current_day_tasks_and_journey_info');
+      const tasks = Array.isArray(todayData && todayData.tasks) ? todayData.tasks
+        : Array.isArray(todayData) ? todayData : [];
+      const clocking = Array.isArray(todayData && todayData.clocking) ? todayData.clocking : [];
+      const score = await yarigAPI('/score/json_user_score');
+      diary = await pushDiaryEntry(tasks, YARIG_EMAIL, score, clocking);
+    } catch (e) { console.error('[members] diary update failed:', e.message); }
+    console.log(`[members] Alta: ${member.name} (${member.roleLabel}) — pushed=${pushed} diary=${diary}`);
+    jsonResponse(res, { ok: true, member, pushed, diary, members: list });
     return;
   }
 
