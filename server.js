@@ -449,6 +449,76 @@ async function pushDiaryEntry(taskList, userEmail, score, clocking) {
   return true;
 }
 
+// Reporte de jornada de UN miembro del equipo (desde el gemelo: /report <nombre>).
+// Escribe una entrada propia (author = "<miembro> · <tienda>") en el diario, con
+// sus labores. Merge por autor: re-reportar actualiza su entrada, sin pisar otras.
+async function pushMemberReport({ member, store, role, lines }) {
+  const date = todayMadrid();
+  const year = date.split('-')[0];
+  const titleDate = `${monthNameES(date)} de ${year}`;
+  const name = String(member || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+  if (!name) return false;
+  const author = name + (store ? ` · ${String(store).slice(0, 60)}` : '');
+  const items = (Array.isArray(lines) ? lines : []).map(s => String(s)).filter(Boolean).slice(0, 20);
+  if (!items.length) items.push('Jornada completada.');
+  const heading = `Jornada${role ? ` · ${role}` : ''}${store ? ` · ${store}` : ''}`;
+
+  let indexRes;
+  try { indexRes = await ghGet(`/repos/${DIARIO_REPO}/contents/index.html`); }
+  catch (e) { console.error('[report] index.html:', e.message); return false; }
+  const indexSha = indexRes.sha;
+  let indexContent = Buffer.from(indexRes.content, 'base64').toString('utf8');
+
+  const now = new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Madrid', hour12: false });
+  const sectionsJs = `      {\n        heading: ${JSON.stringify(heading)},\n        items: [\n${items.map(i => `          ${JSON.stringify(i)}`).join(',\n')}\n        ]\n      }`;
+  const newEntry = `  {\n    date: "${date}",\n    title: "${titleDate}",\n    author: ${JSON.stringify(author)},\n    updateTime: ${JSON.stringify(now)},\n    sections: [\n${sectionsJs}\n    ]\n  },`;
+
+  const authorMarker = `author: ${JSON.stringify(author)}`;
+  let scan = 0, loc = null;
+  while (true) {
+    const di = indexContent.indexOf(`date: "${date}"`, scan);
+    if (di === -1) break;
+    const start = indexContent.lastIndexOf('\n  {\n', di) + 1;
+    const closeIdx = indexContent.indexOf('\n  },\n', di);
+    if (start > 0 && closeIdx !== -1) {
+      const end = closeIdx + '\n  },'.length + 1;
+      if (indexContent.substring(start, end).includes(authorMarker)) { loc = { start, end }; break; }
+      scan = end;
+    } else { scan = di + 1; }
+  }
+  if (loc) indexContent = indexContent.substring(0, loc.start) + newEntry + '\n' + indexContent.substring(loc.end);
+  else indexContent = indexContent.replace('const entries = [', `const entries = [\n${newEntry}`);
+
+  try {
+    await ghPut(`/repos/${DIARIO_REPO}/contents/index.html`, {
+      message: `Diario ${date} [${author}]`,
+      content: Buffer.from(indexContent).toString('base64'), sha: indexSha,
+    });
+  } catch (e) { console.error('[report] push index:', e.message); return false; }
+
+  // .md — merge del bloque del miembro por su marcador [author].
+  const block = [`# Diario - ${titleDate} [${author}]`, '', `1. ${heading}`,
+    ...items.map((it, i) => `   ${String.fromCharCode(97 + i)}. ${it}`)].join('\n');
+  let existingMd = '', mdSha = null;
+  try { const m = await ghGet(`/repos/${DIARIO_REPO}/contents/${date}.md`); mdSha = m.sha || null; existingMd = m.content ? Buffer.from(m.content, 'base64').toString('utf8') : ''; } catch {}
+  const marker = `[${author}]`;
+  let mergedMd;
+  const yIdx = existingMd.indexOf(marker);
+  if (yIdx !== -1) {
+    const blockStart = existingMd.lastIndexOf('# Diario', yIdx);
+    const sepIdx = existingMd.indexOf('\n---\n', yIdx);
+    const before = existingMd.substring(0, blockStart).replace(/\s+$/, '');
+    const after = sepIdx !== -1 ? existingMd.substring(sepIdx + 5).replace(/^\s+/, '') : '';
+    mergedMd = [before, block, after].filter(s => s && s.trim()).join('\n\n---\n\n');
+  } else if (existingMd.trim()) { mergedMd = existingMd.replace(/\s+$/, '') + '\n\n---\n\n' + block; }
+  else { mergedMd = block; }
+  const mdBody = { message: `Diario ${date} [${author}]`, content: Buffer.from(mergedMd + '\n').toString('base64') };
+  if (mdSha) mdBody.sha = mdSha;
+  try { await ghPut(`/repos/${DIARIO_REPO}/contents/${date}.md`, mdBody); } catch (e) { console.error('[report] push md:', e.message); }
+  console.log(`[report] ${author} → diario ${date}`);
+  return author;
+}
+
 // ── HTTP Server ─────────────────────────────────────────────
 
 const MIME = {
@@ -591,7 +661,8 @@ const server = http.createServer(async (req, res) => {
   if (url === '/today' || url === '/team' || url === '/score' ||
       url === '/notifications' || url === '/status' ||
       url.startsWith('/task/') || url === '/clocking' ||
-      url === '/diary/push' || url === '/members' || url === '/member/add') {
+      url === '/diary/push' || url === '/members' || url === '/member/add' ||
+      url === '/report') {
     url = '/yarig' + url;
   }
 
@@ -689,6 +760,18 @@ const server = http.createServer(async (req, res) => {
     const score = await yarigAPI('/score/json_user_score');
     const ok = await pushDiaryEntry(tasks, YARIG_EMAIL, score, clocking);
     jsonResponse(res, { ok });
+    return;
+  }
+
+  if (url === '/yarig/report' && req.method === 'POST') {
+    const body = await readBody(req);
+    const member = String(body.member || '').trim();
+    if (!member) { jsonResponse(res, { ok: false, error: 'Falta el nombre del miembro' }); return; }
+    const author = await pushMemberReport({
+      member, store: body.store || '', role: body.role || '',
+      lines: Array.isArray(body.lines) ? body.lines : [],
+    });
+    jsonResponse(res, author ? { ok: true, author } : { ok: false, error: 'No se pudo escribir el diario' });
     return;
   }
 
