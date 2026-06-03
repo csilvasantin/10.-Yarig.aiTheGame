@@ -375,21 +375,22 @@ async function pushDiaryEntry(taskList, userEmail, score, clocking) {
     (Number.isFinite(pts) ? `\n    points: ${pts},` : '');
   const newEntry = `  {\n    date: "${date}",\n    title: "${titleDate}",\n    author: "Yarig.ai",${timeFields}\n    sections: [\n${sectionsJs}\n    ]\n  },`;
 
-  // Replace existing entry for today or prepend
-  const marker = `date: "${date}"`;
-  const markerIdx = indexContent.indexOf(marker);
-  if (markerIdx !== -1) {
-    // Find the entry's opening `  {` (2-space indent) just before the marker
-    const start = indexContent.lastIndexOf('\n  {\n', markerIdx) + 1;
-    // Find the entry's closing `\n  },\n` — must anchor on newlines to avoid
-    // matching the 6-space section closer `      },`
-    const closeIdx = indexContent.indexOf('\n  },\n', markerIdx);
-    if (start <= 0 || closeIdx === -1) {
-      console.error('[diario] Could not locate entry boundaries, aborting push');
-      return false;
-    }
-    const end = closeIdx + '\n  },'.length + 1;
-    indexContent = indexContent.substring(0, start) + newEntry + '\n' + indexContent.substring(end);
+  // Replace the existing Yarig.ai entry for today (matching date AND author),
+  // preserving entries from other authors (Claude/Codex). Otherwise prepend.
+  let scan = 0, loc = null;
+  while (true) {
+    const di = indexContent.indexOf(`date: "${date}"`, scan);
+    if (di === -1) break;
+    const start = indexContent.lastIndexOf('\n  {\n', di) + 1;
+    const closeIdx = indexContent.indexOf('\n  },\n', di);
+    if (start > 0 && closeIdx !== -1) {
+      const end = closeIdx + '\n  },'.length + 1;
+      if (indexContent.substring(start, end).includes('author: "Yarig.ai"')) { loc = { start, end }; break; }
+      scan = end;
+    } else { scan = di + 1; }
+  }
+  if (loc) {
+    indexContent = indexContent.substring(0, loc.start) + newEntry + '\n' + indexContent.substring(loc.end);
   } else {
     indexContent = indexContent.replace('const entries = [', `const entries = [\n${newEntry}`);
   }
@@ -402,22 +403,41 @@ async function pushDiaryEntry(taskList, userEmail, score, clocking) {
     });
   } catch (e) { console.error('[diario] Push index.html failed:', e.message); return false; }
 
-  // Build and push .md
-  const mdLines = [
+  // Build and push .md — MERGE the Yarig.ai block, preserving other authors
+  const yarigBlock = [
     `# Diario - ${titleDate} [Yarig.ai]`, '',
     ...sections.flatMap((s, si) => [
       `${si + 1}. ${s.heading}`,
       ...s.items.map((item, ii) => `   ${String.fromCharCode(97 + ii)}. ${typeof item === 'string' ? item : (item.text || '')}`),
     ]),
-  ];
-  const mdBody = {
-    message: `Diario ${date} [Yarig.ai] — ${userEmail}`,
-    content: Buffer.from(mdLines.join('\n') + '\n').toString('base64'),
-  };
+  ].join('\n');
+
+  let existingMd = '', mdSha = null;
   try {
     const mdRes = await ghGet(`/repos/${DIARIO_REPO}/contents/${date}.md`);
-    if (mdRes.sha) mdBody.sha = mdRes.sha;
-  } catch { /* file doesn't exist yet, no sha needed */ }
+    mdSha = mdRes.sha || null;
+    existingMd = mdRes.content ? Buffer.from(mdRes.content, 'base64').toString('utf8') : '';
+  } catch { /* no existe aun */ }
+
+  let mergedMd;
+  const yIdx = existingMd.indexOf('[Yarig.ai]');
+  if (yIdx !== -1) {
+    // Reemplazar el bloque Yarig.ai (de su '# Diario' al siguiente '---' o EOF)
+    const blockStart = existingMd.lastIndexOf('# Diario', yIdx);
+    const sepIdx = existingMd.indexOf('\n---\n', yIdx);
+    const before = existingMd.substring(0, blockStart).replace(/\s+$/, '');
+    const after = sepIdx !== -1 ? existingMd.substring(sepIdx + 5).replace(/^\s+/, '') : '';
+    mergedMd = [before, yarigBlock, after].filter(s => s && s.trim()).join('\n\n---\n\n');
+  } else if (existingMd.trim()) {
+    mergedMd = existingMd.replace(/\s+$/, '') + '\n\n---\n\n' + yarigBlock;
+  } else {
+    mergedMd = yarigBlock;
+  }
+  const mdBody = {
+    message: `Diario ${date} [Yarig.ai] — ${userEmail}`,
+    content: Buffer.from(mergedMd + '\n').toString('base64'),
+  };
+  if (mdSha) mdBody.sha = mdSha;
   try { await ghPut(`/repos/${DIARIO_REPO}/contents/${date}.md`, mdBody); }
   catch (e) { console.error('[diario] Push .md failed:', e.message); }
 
