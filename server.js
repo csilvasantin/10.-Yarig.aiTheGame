@@ -101,6 +101,78 @@ function hueRequest(method, endpoint, body) {
   });
 }
 
+// ── Aforo / People-counting (cámara Hikvision vía ieu.ai) ──
+// La cámara hace POST a ieu.ai, que expone la ocupación en /api/ocuppancy.
+// El navegador no puede leer ieu.ai directo (sin CORS), así que el gemelo
+// hace de proxy mismo-origen y de paso acumula el pico del día para el diario.
+const OCC_URL = process.env.OCC_URL || 'https://ieu.ai/api/ocuppancy';
+let occCache = { ts: 0, data: null };
+const occDay = { date: '', peak: 0, samples: 0, sum: 0, enter: 0, leave: 0 };
+
+function fetchOccupancyRaw() {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(OCC_URL); } catch (e) { return reject(e); }
+    const req = https.request({
+      hostname: u.hostname,
+      port: u.port || 443,
+      path: u.pathname + u.search,
+      method: 'GET',
+      headers: { 'User-Agent': 'YarigTheGame/1.0', 'Accept': 'application/json' },
+    }, r => {
+      let d = '';
+      r.on('data', c => d += c);
+      r.on('end', () => { try { resolve(JSON.parse(d)); } catch (e) { reject(new Error('bad JSON from ' + u.hostname)); } });
+    });
+    req.on('error', reject);
+    req.setTimeout(6000, () => req.destroy(new Error('occupancy timeout')));
+    req.end();
+  });
+}
+
+async function getOccupancy() {
+  const now = Date.now();
+  if (occCache.data && now - occCache.ts < 2000) return occCache.data;
+  let raw;
+  try { raw = await fetchOccupancyRaw(); }
+  catch (e) {
+    const stale = occCache.data;
+    return { ok: false, connected: false, error: e.message,
+      occupancy: stale ? stale.occupancy : 0, enter: stale ? stale.enter : 0,
+      leave: stale ? stale.leave : 0, peak: occDay.peak };
+  }
+  const num = (...keys) => {
+    for (const k of keys) { const v = parseInt(raw[k], 10); if (Number.isFinite(v)) return v; }
+    return 0;
+  };
+  const occupancy = Math.max(0, num('current_occupancy', 'occupancy'));
+  const enter = num('total_enter', 'camera_total_enter');
+  const leave = num('total_leave', 'total_exit', 'camera_total_leave');
+  const recent = Array.isArray(raw.events) ? raw.events.slice(0, 8).map(e => ({
+    reg: e.registration || null, at: e.received_at || e.camera_time || null,
+  })) : [];
+
+  const date = todayMadrid();
+  if (occDay.date !== date) { occDay.date = date; occDay.peak = 0; occDay.samples = 0; occDay.sum = 0; }
+  if (occupancy > occDay.peak) occDay.peak = occupancy;
+  occDay.samples++; occDay.sum += occupancy; occDay.enter = enter; occDay.leave = leave;
+
+  const data = {
+    ok: true,
+    connected: raw.connection ? raw.connection === 'receiving' : true,
+    occupancy, enter, leave,
+    camera: raw.channel_name || null,
+    cameraIp: raw.camera_ip || null,
+    lastEventAt: raw.last_event_at || raw.last_camera_time || null,
+    peak: occDay.peak,
+    avg: occDay.samples ? Math.round(occDay.sum / occDay.samples) : occupancy,
+    recent,
+    ts: new Date().toISOString(),
+  };
+  occCache = { ts: now, data };
+  return data;
+}
+
 // ── Session management ─────────────────────────────────────
 
 let yarigCookies = {};
@@ -368,6 +440,17 @@ async function pushDiaryEntry(taskList, userEmail, score, clocking) {
       return `Nuevo miembro: ${m.name} (${rl})${loc}`;
     }),
   });
+  // Aforo del local (cámara Hikvision) — nunca debe romper el diario
+  try {
+    const occ = await getOccupancy();
+    if (occ && occ.ok) sections.push({
+      heading: 'Aforo del local (cámara)',
+      items: [
+        `Ocupación al cierre: ${occ.occupancy} · pico de hoy: ${occ.peak}`,
+        `Entradas: ${occ.enter} · Salidas: ${occ.leave}`,
+      ],
+    });
+  } catch (e) { console.error('[diario] aforo skip:', e.message); }
   if (!sections.length) sections.push({ heading: 'Actividad', items: [`Sin tareas registradas por ${userEmail}`] });
 
   const sectionsJs = sections.map(s =>
@@ -664,7 +747,7 @@ const server = http.createServer(async (req, res) => {
       url === '/notifications' || url === '/status' ||
       url.startsWith('/task/') || url === '/clocking' ||
       url === '/diary/push' || url === '/members' || url === '/member/add' ||
-      url === '/report') {
+      url === '/report' || url === '/occupancy') {
     url = '/yarig' + url;
   }
 
@@ -819,6 +902,13 @@ const server = http.createServer(async (req, res) => {
 
   if (url === '/yarig/status') {
     jsonResponse(res, { connected: loggedIn, email: YARIG_EMAIL });
+    return;
+  }
+
+  // ── Aforo en vivo (cámara Hikvision vía ieu.ai) ──
+  if (url === '/yarig/occupancy') {
+    const data = await getOccupancy();
+    jsonResponse(res, data);
     return;
   }
 
